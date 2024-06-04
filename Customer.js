@@ -12,89 +12,104 @@ const Customer = () => {
   const [password, setPassword] = useState("");
   const [profile, setProfile] = useState(null);
   const [allUserData, setAllUsersData] = useState([]);
-  const [offline, setOffline] = useState(false);
+  const [offline, setOffline] = useState(!navigator.onLine);
 
-  const idb =
-    window.indexedDB ||
-    window.mozIndexedDB ||
-    window.webkitIndexedDB ||
-    window.msIndexedDB ||
-    window.shimIndexedDB;
+  const dbVersion = 2;
+  const dbName = "Create";
 
-  if (!idb) {
-    console.log("This browser doesn't support IndexedDB");
-    return;
-  }
-  console.log(idb);
+  useEffect(() => {
+    // Listen for online/offline status changes
+    const handleOnline = () => setOffline(false);
+    const handleOffline = () => setOffline(true);
 
-  const request = idb.open("Create", 2);
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
 
-  request.onerror = (event) => {
-    console.log("An error occurred with IndexedDB");
-    console.log("Error", event);
+    // Fetch initial data
+    getAllData();
+
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
+
+  // Open IndexedDB and create object store if necessary
+  const openDB = () => {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(dbName, dbVersion);
+
+      request.onerror = (event) => {
+        console.error("An error occurred with IndexedDB", event);
+        reject(event);
+      };
+
+      request.onupgradeneeded = (event) => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains("userData")) {
+          db.createObjectStore("userData", {
+            keyPath: "id",
+            autoIncrement: true,
+          });
+        }
+      };
+
+      request.onsuccess = () => {
+        resolve(request.result);
+      };
+    });
   };
 
-  request.onupgradeneeded = (event) => {
-    console.log(event);
-    const db = request.result;
-
-    if (!db.objectStoreNames.contains("userData")) {
-      db.createObjectStore("userData", { keyPath: "id" });
-    }
-  };
-
-  request.onsuccess = () => {
-    console.log("Database opened successfully");
-    const db = request.result;
-
-    var tx = db.transaction("userData", "readwrite");
-    var userData = tx.objectStore("userData");
-
-    allUserData.forEach((item) => userData.put(item));
-
+  // Save data to IndexedDB
+  const saveDataToIndexedDB = async (data) => {
+    const db = await openDB();
+    const tx = db.transaction("userData", "readwrite");
+    const store = tx.objectStore("userData");
+    store.put(data);
     return tx.complete;
   };
 
-  const getAllData = () => {
-    const dbPromise = idb.open("Create", 2);
+  // Retrieve all data from IndexedDB
+  const getAllData = async () => {
+    const db = await openDB();
+    const tx = db.transaction("userData", "readonly");
+    const store = tx.objectStore("userData");
+    const request = store.getAll();
 
-    dbPromise.onsuccess = () => {
-      const db = dbPromise.result;
+    request.onsuccess = () => {
+      setAllUsersData(request.result);
+    };
 
-      var tx = db.transaction("userData", "readonly");
-      var userData = tx.objectStore("userData");
-      const users = userData.getAll();
-
-      users.onsuccess = (query) => {
-        setAllUsersData(query.srcElement.result);
-      };
-
-      tx.oncomplete = () => {
-        db.close();
-      };
+    tx.oncomplete = () => {
+      db.close();
     };
   };
 
-  useEffect(() => {
-    window.addEventListener("offline", () => {
-      setOffline(true);
-    });
-  }, []);
+  const saveClick = async () => {
+    const customerData = {
+      name,
+      email,
+      phone,
+      address,
+      password,
+      profile,
+    };
 
-  useEffect(() => {
-    const saveClick = async () => {
-      // const dbPromise = idb.open("Create", 2);
-
-      // FormData for handling file uploads
-      let formData = new FormData();
-      formData.append("customer_name", name);
-      formData.append("customer_email", email);
-      formData.append("customer_phone", phone);
-      formData.append("customer_address", address);
-      formData.append("customer_password", password);
-      formData.append("file", profile);
-
+    if (offline) {
+      // Save data to IndexedDB for offline use
+      await saveDataToIndexedDB(customerData);
+      toast.success("Data saved offline");
+    } else {
       try {
+        // Upload data to server
+        let formData = new FormData();
+        formData.append("customer_name", name);
+        formData.append("customer_email", email);
+        formData.append("customer_phone", phone);
+        formData.append("customer_address", address);
+        formData.append("customer_password", password);
+        formData.append("file", profile);
+
         let saveData = await axiosInstance.post(
           `/api/customer/create`,
           formData,
@@ -104,20 +119,25 @@ const Customer = () => {
             },
           }
         );
+
         toast.success(saveData.data.message);
         console.log(saveData);
+
+        // Clear form inputs
         setName("");
         setEmail("");
         setPhone("");
         setAddress("");
         setPassword("");
-        setProfile(null); // Reset file state after successful upload
+        setProfile(null);
+
+        // Fetch latest data
+        getAllData();
       } catch (error) {
-        // Handle error
-        console.log(error);
+        console.error(error);
       }
-    };
-  }, [offlineData]);
+    }
+  };
 
   return (
     <>
@@ -214,26 +234,32 @@ const Customer = () => {
       </div>
 
       <div style={{ marginLeft: "30px" }}>
-        <CButton className="btn btn-success save_buttom" onClick={saveClick}>
-          Save
-        </CButton>
+        {offline ? (
+          <CButton
+            className="btn btn-success save_buttom"
+            onClick={() => {
+              if (offline) {
+                const data = {
+                  id: allUserData.length + 1,
+                  name,
+                  email,
+                  phone,
+                  address,
+                  password,
+                  profile,
+                };
+                saveDataToIndexedDB(data);
+              }
+            }}
+          >
+            Save
+          </CButton>
+        ) : (
+          <CButton className="btn btn-success save_buttom" onClick={saveClick}>
+            Save
+          </CButton>
+        )}
       </div>
-
-      <button
-        onClick={() => {
-          if (offline) {
-            const data = {
-              id: 1,
-              name: "mgmg",
-              email: "mgmg@gmail.com",
-              phone: "002233",
-              address: "Yangon",
-              password: "12345",
-              file: "profile",
-            };
-          }
-        }}
-      ></button>
     </>
   );
 };
